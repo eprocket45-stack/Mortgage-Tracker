@@ -223,6 +223,7 @@ function AddConditionsModal({ onSave, onClose, apiKey }) {
     if (!email.trim()) return;
     setLoading(true); setError("");
     try {
+      if (!apiKey) { setError("No API key found. Click the API Key button in the header to enter it."); setLoading(false); return; }
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method:"POST",
         headers:{ "Content-Type":"application/json", "x-api-key":apiKey, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
@@ -231,17 +232,25 @@ function AddConditionsModal({ onSave, onClose, apiKey }) {
           messages:[{ role:"user", content:"Extract every distinct document or item being requested from the email below. Return ONLY a JSON array of short strings (no numbering, no bullets). Each item concise under 15 words. Email:\n\n"+email }]
         })
       });
+      if (res.status===401) { setError("Invalid API key. Click the API Key button in the header to update it."); setLoading(false); return; }
+      if (res.status===429) { setError("Rate limit hit. Wait a moment and try again."); setLoading(false); return; }
+      if (!res.ok) { setError("API error "+res.status+". Please try again."); setLoading(false); return; }
       const data = await res.json();
+      if (data.error) { setError("API error: "+data.error.message); setLoading(false); return; }
       const raw = (data.content||[]).find(b=>b.type==="text");
       const txt = raw ? raw.text : "[]";
-      const parsed = JSON.parse(txt.replace(/```json|```/g,"").trim());
+      let parsed;
+      try { parsed = JSON.parse(txt.replace(/```json|```/g,"").trim()); } catch(pe) {
+        const lines = txt.split("\n").map(l=>l.replace(/^[-\d.)+\s*]+/,"").trim()).filter(l=>l.length>3);
+        parsed = lines.length ? lines : [];
+      }
       const list = Array.isArray(parsed) ? parsed.filter(s=>typeof s==="string"&&s.trim()) : [];
-      if (!list.length) throw new Error("none");
+      if (!list.length) { setError("No items found. Make sure the email contains document requests."); setLoading(false); return; }
       setItems(list);
       const init = {}; list.forEach((_,i)=>{init[i]=true;}); setChecked(init);
       setStep("review");
     } catch(e) {
-      setError("Could not extract items. Check the email text and try again.");
+      setError("Connection error: "+(e.message||"unknown")+". Check your internet and try again.");
     }
     setLoading(false);
   };
