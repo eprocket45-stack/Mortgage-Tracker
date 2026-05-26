@@ -234,7 +234,12 @@ function AddConditionsModal({ onSave, onClose, apiKey }) {
       });
       if (res.status===401) { setError("Invalid API key. Click the API Key button in the header to update it."); setLoading(false); return; }
       if (res.status===429) { setError("Rate limit hit. Wait a moment and try again."); setLoading(false); return; }
-      if (!res.ok) { setError("API error "+res.status+". Please try again."); setLoading(false); return; }
+      if (!res.ok) {
+        let errDetail = "";
+        try { const errData = await res.json(); errDetail = errData.error ? errData.error.message : JSON.stringify(errData); } catch(e) { errDetail = res.statusText; }
+        setError("API error "+res.status+": "+errDetail);
+        setLoading(false); return;
+      }
       const data = await res.json();
       if (data.error) { setError("API error: "+data.error.message); setLoading(false); return; }
       const raw = (data.content||[]).find(b=>b.type==="text");
