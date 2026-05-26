@@ -87,7 +87,7 @@ function ApiKeyScreen({ onSave }) {
       const res = await fetch("https://api.anthropic.com/v1/messages", {
         method:"POST",
         headers:{ "Content-Type":"application/json", "x-api-key":k, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
-        body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:10, messages:[{role:"user",content:"hi"}] })
+        body:JSON.stringify({ model:"claude-haiku-4-5-20251001", max_tokens:10, messages:[{role:"user",content:"hi"}] })
       });
       if (res.status === 401) { setErr("Invalid API key — check and try again."); setTesting(false); return; }
       onSave(k);
@@ -228,7 +228,7 @@ function AddConditionsModal({ onSave, onClose, apiKey }) {
         method:"POST",
         headers:{ "Content-Type":"application/json", "x-api-key":apiKey, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
         body:JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:1000,
+          model:"claude-haiku-4-5-20251001", max_tokens:1000,
           messages:[{ role:"user", content:"Extract every distinct document or item being requested from the email below. Return ONLY a JSON array of short strings (no numbering, no bullets). Each item concise under 15 words. Email:\n\n"+email }]
         })
       });
