@@ -1,0 +1,544 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mortgage Condition Tracker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #F8FAFC; }
+  input, textarea, select, button { font-family: inherit; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #F1F5F9; } ::-webkit-scrollbar-thumb { background: #CBD5E1; border-radius: 3px; }
+  input::placeholder, textarea::placeholder { color: #94A3B8; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+const PARTY_META = {
+  Borrower:             { color: "#3B82F6", bg: "#EFF6FF" },
+  Title:                { color: "#D97706", bg: "#FFFBEB" },
+  Insurance:            { color: "#16A34A", bg: "#F0FDF4" },
+  Agent:                { color: "#7C3AED", bg: "#F5F3FF" },
+  "Credit Supplements": { color: "#DB2777", bg: "#FDF2F8" },
+  Other:                { color: "#6B7280", bg: "#F9FAFB" },
+};
+const PARTIES = Object.keys(PARTY_META);
+const FILTERS = ["All", "Pending", "Received"];
+const LO_COLORS = ["#3B82F6","#7C3AED","#16A34A","#D97706","#DB2777","#0891B2","#DC2626","#059669"];
+
+const STORAGE_KEY_FILES = "mtc_files_v1";
+const STORAGE_KEY_LOS   = "mtc_los_v1";
+const STORAGE_KEY_APIKEY = "mtc_apikey_v1";
+
+function lsGet(key) { try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch { return null; } }
+function lsSet(key, val) { try { localStorage.setItem(key, JSON.stringify(val)); } catch {} }
+
+const getToday = () => new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+const uid = () => Math.random().toString(36).slice(2, 10);
+const initials = name => name.trim().split(/\s+/).map(w => w[0]).join("").slice(0,2).toUpperCase();
+
+// ── Shared styles ──────────────────────────────────────────────────────
+const IS = { display:"block", width:"100%", padding:"9px 12px", borderRadius:8, border:"1.5px solid #E5E7EB", fontSize:14, color:"#1E293B", outline:"none", background:"#fff" };
+const LS = { display:"flex", flexDirection:"column", fontSize:13, fontWeight:600, color:"#374151", gap:4 };
+const BP = { background:"#3B82F6", color:"#fff", border:"none", borderRadius:8, padding:"9px 18px", fontWeight:700, fontSize:14, cursor:"pointer", whiteSpace:"nowrap" };
+const BG = { background:"#fff", color:"#374151", border:"1.5px solid #E5E7EB", borderRadius:8, padding:"8px 16px", fontWeight:600, fontSize:14, cursor:"pointer" };
+
+// ── Components ─────────────────────────────────────────────────────────
+function PartyBadge({ party }) {
+  const m = PARTY_META[party] || PARTY_META.Other;
+  return <span style={{ display:"inline-block", fontSize:11, fontWeight:700, letterSpacing:".04em", padding:"2px 8px", borderRadius:999, color:m.color, background:m.bg, border:"1px solid "+m.color+"33" }}>{party}</span>;
+}
+
+function ProgressBar({ pct }) {
+  return (
+    <div style={{ height:6, borderRadius:999, background:"#E5E7EB", overflow:"hidden" }}>
+      <div style={{ height:"100%", borderRadius:999, width:pct+"%", background:pct===100?"#16A34A":"#3B82F6", transition:"width .4s ease" }} />
+    </div>
+  );
+}
+
+function Modal({ onClose, children, wide }) {
+  return (
+    <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(15,23,42,.55)", backdropFilter:"blur(3px)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:200, padding:16 }}>
+      <div onClick={e=>e.stopPropagation()} style={{ background:"#fff", borderRadius:16, boxShadow:"0 24px 64px rgba(0,0,0,.2)", width:"100%", maxWidth:wide?780:520, maxHeight:"90vh", overflow:"hidden", display:"flex", flexDirection:"column" }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ── API Key Setup Screen ───────────────────────────────────────────────
+function ApiKeyScreen({ onSave }) {
+  const [key, setKey] = useState("");
+  const [err, setErr] = useState("");
+  const [testing, setTesting] = useState(false);
+
+  const handleSave = async () => {
+    const k = key.trim();
+    if (!k.startsWith("sk-ant-")) { setErr("Key should start with sk-ant-"); return; }
+    setTesting(true); setErr("");
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "x-api-key":k, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
+        body:JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:10, messages:[{role:"user",content:"hi"}] })
+      });
+      if (res.status === 401) { setErr("Invalid API key — check and try again."); setTesting(false); return; }
+      onSave(k);
+    } catch(e) {
+      setErr("Connection error. Make sure you are online.");
+    }
+    setTesting(false);
+  };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#0F172A", display:"flex", alignItems:"center", justifyContent:"center", padding:24 }}>
+      <div style={{ background:"#fff", borderRadius:20, padding:40, maxWidth:480, width:"100%", boxShadow:"0 32px 80px rgba(0,0,0,.4)" }}>
+        <div style={{ fontSize:36, marginBottom:12 }}>🏠</div>
+        <h1 style={{ fontSize:24, fontWeight:900, color:"#0F172A", marginBottom:8 }}>Mortgage Condition Tracker</h1>
+        <p style={{ fontSize:14, color:"#64748B", marginBottom:28, lineHeight:1.6 }}>
+          Enter your Anthropic API key to enable AI-powered condition extraction. Your key is stored only in this browser and never sent anywhere except Anthropic.
+        </p>
+
+        <div style={{ background:"#F8FAFC", border:"1px solid #E5E7EB", borderRadius:12, padding:16, marginBottom:24 }}>
+          <div style={{ fontSize:13, fontWeight:700, color:"#374151", marginBottom:8 }}>How to get your free API key:</div>
+          <ol style={{ paddingLeft:18, fontSize:13, color:"#64748B", lineHeight:2 }}>
+            <li>Go to <strong>console.anthropic.com</strong></li>
+            <li>Sign up or log in (free)</li>
+            <li>Click <strong>API Keys</strong> in the left sidebar</li>
+            <li>Click <strong>Create Key</strong>, copy it, paste below</li>
+          </ol>
+        </div>
+
+        <label style={LS}>
+          API Key
+          <input
+            style={{ ...IS, marginTop:0, fontFamily:"monospace", fontSize:13 }}
+            type="password"
+            value={key}
+            onChange={e=>setKey(e.target.value)}
+            placeholder="sk-ant-api03-..."
+            onKeyDown={e=>{ if(e.key==="Enter") handleSave(); }}
+          />
+        </label>
+        {err && <div style={{ color:"#DC2626", fontSize:13, marginTop:8 }}>{err}</div>}
+        <button
+          style={{ ...BP, width:"100%", marginTop:16, padding:"12px", fontSize:15, opacity:testing?.6:1 }}
+          onClick={handleSave}
+          disabled={testing}
+        >{testing ? "Testing key..." : "Save & Get Started"}</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Manage LOs Modal ───────────────────────────────────────────────────
+function ManageLOsModal({ loanOfficers, onSave, onClose }) {
+  const [list, setList] = useState(loanOfficers.map(lo=>({...lo})));
+  const [newName, setNewName] = useState("");
+  const addLO = () => {
+    const n = newName.trim(); if (!n) return;
+    setList(prev=>[...prev,{ id:uid(), name:n, color:LO_COLORS[prev.length%LO_COLORS.length] }]);
+    setNewName("");
+  };
+  return (
+    <Modal onClose={onClose}>
+      <div style={{ padding:"28px 28px 0", borderBottom:"1px solid #F1F5F9" }}>
+        <h2 style={{ margin:0, fontSize:20, fontWeight:700, color:"#0F172A" }}>Manage Loan Officers</h2>
+        <p style={{ margin:"4px 0 20px", fontSize:13, color:"#64748B" }}>Each loan officer gets their own section on the dashboard.</p>
+      </div>
+      <div style={{ padding:"20px 28px", overflowY:"auto", flex:1 }}>
+        <div style={{ display:"flex", gap:8, marginBottom:16 }}>
+          <input style={{ ...IS, flex:1 }} value={newName} onChange={e=>setNewName(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")addLO();}} placeholder="Loan officer full name..." />
+          <button style={BP} onClick={addLO}>Add</button>
+        </div>
+        {list.length===0 && <div style={{ textAlign:"center", padding:"24px 0", color:"#94A3B8", fontSize:14 }}>No loan officers yet.</div>}
+        <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+          {list.map(lo=>(
+            <div key={lo.id} style={{ display:"flex", alignItems:"center", gap:12, padding:"10px 14px", background:"#F8FAFC", borderRadius:10, border:"1px solid #E5E7EB" }}>
+              <div style={{ width:36, height:36, borderRadius:"50%", background:lo.color, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:13, flexShrink:0 }}>{initials(lo.name)}</div>
+              <div style={{ flex:1, fontWeight:600, color:"#1E293B", fontSize:14 }}>{lo.name}</div>
+              <button onClick={()=>setList(p=>p.filter(x=>x.id!==lo.id))} style={{ background:"none", border:"none", cursor:"pointer", color:"#CBD5E1", fontSize:16, padding:"2px 6px" }}
+                onMouseEnter={e=>{e.currentTarget.style.color="#EF4444";}} onMouseLeave={e=>{e.currentTarget.style.color="#CBD5E1";}}>✕</button>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div style={{ padding:"16px 28px 24px", display:"flex", gap:10, justifyContent:"flex-end", borderTop:"1px solid #F1F5F9" }}>
+        <button style={BG} onClick={onClose}>Cancel</button>
+        <button style={BP} onClick={()=>onSave(list)}>Save</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Add File Modal ─────────────────────────────────────────────────────
+function AddFileModal({ onSave, onClose, loanOfficers, defaultLoId }) {
+  const [name, setName] = useState("");
+  const [loan, setLoan] = useState("");
+  const [loId, setLoId] = useState(defaultLoId || loanOfficers[0]?.id || "");
+  return (
+    <Modal onClose={onClose}>
+      <div style={{ padding:"28px 28px 0", borderBottom:"1px solid #F1F5F9" }}>
+        <h2 style={{ margin:0, fontSize:20, fontWeight:700, color:"#0F172A" }}>New Borrower File</h2>
+        <p style={{ margin:"4px 0 20px", fontSize:13, color:"#64748B" }}>Create a file to start tracking conditions.</p>
+      </div>
+      <div style={{ padding:"24px 28px", display:"flex", flexDirection:"column", gap:16 }}>
+        {loanOfficers.length>0 && (
+          <label style={LS}>Loan Officer
+            <select style={{ ...IS, cursor:"pointer" }} value={loId} onChange={e=>setLoId(e.target.value)}>
+              <option value="">-- Unassigned --</option>
+              {loanOfficers.map(lo=><option key={lo.id} value={lo.id}>{lo.name}</option>)}
+            </select>
+          </label>
+        )}
+        <label style={LS}>Borrower Name *<input style={IS} value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. John & Jane Smith" /></label>
+        <label style={LS}>Loan / File #<input style={IS} value={loan} onChange={e=>setLoan(e.target.value)} placeholder="e.g. 2025-00142" /></label>
+      </div>
+      <div style={{ padding:"16px 28px 24px", display:"flex", gap:10, justifyContent:"flex-end" }}>
+        <button style={BG} onClick={onClose}>Cancel</button>
+        <button style={BP} onClick={()=>{ if(name.trim()) onSave({ name:name.trim(), loan:loan.trim(), loId:loId||null }); }}>Create File</button>
+      </div>
+    </Modal>
+  );
+}
+
+// ── Add Conditions Modal ───────────────────────────────────────────────
+function AddConditionsModal({ onSave, onClose, apiKey }) {
+  const [party, setParty] = useState("Borrower");
+  const [email, setEmail] = useState("");
+  const [step, setStep] = useState("input");
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [checked, setChecked] = useState({});
+
+  const extract = async () => {
+    if (!email.trim()) return;
+    setLoading(true); setError("");
+    try {
+      const res = await fetch("https://api.anthropic.com/v1/messages", {
+        method:"POST",
+        headers:{ "Content-Type":"application/json", "x-api-key":apiKey, "anthropic-version":"2023-06-01", "anthropic-dangerous-direct-browser-access":"true" },
+        body:JSON.stringify({
+          model:"claude-sonnet-4-20250514", max_tokens:1000,
+          messages:[{ role:"user", content:"Extract every distinct document or item being requested from the email below. Return ONLY a JSON array of short strings (no numbering, no bullets). Each item concise under 15 words. Email:\n\n"+email }]
+        })
+      });
+      const data = await res.json();
+      const raw = (data.content||[]).find(b=>b.type==="text");
+      const txt = raw ? raw.text : "[]";
+      const parsed = JSON.parse(txt.replace(/```json|```/g,"").trim());
+      const list = Array.isArray(parsed) ? parsed.filter(s=>typeof s==="string"&&s.trim()) : [];
+      if (!list.length) throw new Error("none");
+      setItems(list);
+      const init = {}; list.forEach((_,i)=>{init[i]=true;}); setChecked(init);
+      setStep("review");
+    } catch(e) {
+      setError("Could not extract items. Check the email text and try again.");
+    }
+    setLoading(false);
+  };
+
+  const selectedCount = Object.values(checked).filter(Boolean).length;
+
+  return (
+    <Modal onClose={onClose} wide>
+      <div style={{ padding:"28px 28px 0", borderBottom:"1px solid #F1F5F9" }}>
+        <h2 style={{ margin:0, fontSize:20, fontWeight:700, color:"#0F172A" }}>{step==="input"?"Add Conditions via Email":"Review Extracted Items"}</h2>
+        <p style={{ margin:"4px 0 20px", fontSize:13, color:"#64748B" }}>{step==="input"?"Select a party, paste the email, and let AI extract each condition.":"Uncheck any items you don't want to add."}</p>
+      </div>
+      <div style={{ padding:"20px 28px", overflowY:"auto", flex:1 }}>
+        {step==="input" ? (
+          <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
+            <div>
+              <div style={{ fontSize:13, fontWeight:600, color:"#374151", marginBottom:8 }}>Party</div>
+              <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                {PARTIES.map(p=>{ const m=PARTY_META[p]; const sel=party===p; return (
+                  <button key={p} onClick={()=>setParty(p)} style={{ padding:"6px 14px", borderRadius:999, border:"1.5px solid "+(sel?m.color:"#E5E7EB"), background:sel?m.bg:"#fff", color:sel?m.color:"#6B7280", fontWeight:sel?700:500, fontSize:13, cursor:"pointer" }}>{p}</button>
+                );})}
+              </div>
+            </div>
+            <label style={LS}>Paste Email Body
+              <textarea style={{ ...IS, height:220, resize:"vertical" }} value={email} onChange={e=>setEmail(e.target.value)} placeholder="Paste the lender condition email here..." />
+            </label>
+            {error && <div style={{ color:"#DC2626", fontSize:13 }}>{error}</div>}
+          </div>
+        ) : (
+          <div style={{ display:"flex", flexDirection:"column", gap:4 }}>
+            <div style={{ fontSize:13, color:"#64748B", marginBottom:8 }}>{selectedCount} of {items.length} items selected</div>
+            {items.map((item,i)=>(
+              <label key={i} style={{ display:"flex", alignItems:"flex-start", gap:10, padding:"10px 12px", borderRadius:8, cursor:"pointer", background:checked[i]?"#F0F9FF":"#F9FAFB", border:"1px solid "+(checked[i]?"#BAE6FD":"#E5E7EB") }}>
+                <input type="checkbox" checked={!!checked[i]} onChange={e=>setChecked(c=>({...c,[i]:e.target.checked}))} style={{ marginTop:2, accentColor:"#3B82F6", width:15, height:15, flexShrink:0 }} />
+                <span style={{ fontSize:14, color:"#1E293B", lineHeight:1.4 }}>{item}</span>
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
+      <div style={{ padding:"16px 28px 24px", display:"flex", gap:10, justifyContent:"flex-end", borderTop:"1px solid #F1F5F9" }}>
+        {step==="review" && <button style={BG} onClick={()=>setStep("input")}>Back</button>}
+        <button style={BG} onClick={onClose}>Cancel</button>
+        {step==="input"
+          ? <button style={{ ...BP, opacity:loading?.6:1 }} onClick={extract} disabled={loading}>{loading?"Extracting...":"Extract Conditions"}</button>
+          : <button style={BP} onClick={()=>{ const sel=items.filter((_,i)=>checked[i]); if(sel.length) onSave(sel.map(text=>({id:uid(),text,party,dateSent:getToday(),dateReceived:null,done:false}))); }}>{"Add "+selectedCount+" Conditions"}</button>
+        }
+      </div>
+    </Modal>
+  );
+}
+
+// ── Condition Row ──────────────────────────────────────────────────────
+function ConditionRow({ c, onToggle, onDelete }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div onMouseEnter={()=>setHover(true)} onMouseLeave={()=>setHover(false)} style={{ display:"flex", alignItems:"center", gap:12, padding:"12px 16px", background:"#fff", borderRadius:10, border:"1px solid "+(c.done?"#BBF7D0":"#E5E7EB"), opacity:c.done?.75:1, transition:"all .15s", boxShadow:hover?"0 2px 8px rgba(0,0,0,.06)":"none" }}>
+      <input type="checkbox" checked={c.done} onChange={()=>onToggle(c.id)} style={{ width:17, height:17, accentColor:"#3B82F6", cursor:"pointer", flexShrink:0 }} />
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ fontSize:14, lineHeight:1.4, color:c.done?"#94A3B8":"#1E293B", textDecoration:c.done?"line-through":"none" }}>{c.text}</div>
+        <div style={{ display:"flex", gap:10, marginTop:4, flexWrap:"wrap", alignItems:"center" }}>
+          <PartyBadge party={c.party} />
+          <span style={{ fontSize:11, color:"#94A3B8" }}>Sent {c.dateSent}</span>
+          {c.dateReceived && <span style={{ fontSize:11, color:"#16A34A", fontWeight:600 }}>Received {c.dateReceived}</span>}
+        </div>
+      </div>
+      {hover && <button onClick={()=>onDelete(c.id)} style={{ background:"none", border:"none", cursor:"pointer", color:"#CBD5E1", fontSize:16, padding:"2px 6px", borderRadius:4 }} onMouseEnter={e=>{e.currentTarget.style.color="#EF4444";}} onMouseLeave={e=>{e.currentTarget.style.color="#CBD5E1";}}>✕</button>}
+    </div>
+  );
+}
+
+// ── Detail View ────────────────────────────────────────────────────────
+function DetailView({ file, loName, loColor, onBack, onUpdate, apiKey }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [statusF, setStatusF] = useState("All");
+  const [partyF, setPartyF] = useState("All");
+  const conds = file.conditions||[];
+  const total = conds.length, received = conds.filter(c=>c.done).length;
+  const pct = total?Math.round(received/total*100):0, complete = total>0&&received===total;
+  const visible = conds.filter(c=>{ if(statusF==="Pending"&&c.done)return false; if(statusF==="Received"&&!c.done)return false; if(partyF!=="All"&&c.party!==partyF)return false; return true; });
+  const toggle = id=>onUpdate({...file,conditions:conds.map(c=>c.id===id?{...c,done:!c.done,dateReceived:!c.done?getToday():null}:c)});
+  const delCond = id=>onUpdate({...file,conditions:conds.filter(c=>c.id!==id)});
+  const addConds = nc=>{ onUpdate({...file,conditions:[...conds,...nc]}); setShowAdd(false); };
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#F8FAFC" }}>
+      <div style={{ background:"#0F172A", color:"#fff", padding:"0 24px" }}>
+        <div style={{ maxWidth:900, margin:"0 auto" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:12, padding:"16px 0 12px" }}>
+            <button onClick={onBack} style={{ background:"rgba(255,255,255,.1)", border:"none", color:"#fff", borderRadius:8, padding:"6px 14px", cursor:"pointer", fontSize:13, fontWeight:600 }}>← Dashboard</button>
+            <div style={{ flex:1 }}>
+              {loName && <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
+                <div style={{ width:18, height:18, borderRadius:"50%", background:loColor||"#3B82F6", display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontWeight:800, color:"#fff" }}>{initials(loName)}</div>
+                <span style={{ fontSize:12, color:"#94A3B8" }}>{loName}</span>
+              </div>}
+              <div style={{ fontSize:20, fontWeight:800 }}>{file.name}</div>
+              {file.loan && <div style={{ fontSize:12, color:"#94A3B8", marginTop:2 }}>Loan #{file.loan}</div>}
+            </div>
+            <button style={{ ...BP, fontSize:13 }} onClick={()=>setShowAdd(true)}>+ Add Conditions</button>
+          </div>
+          <div style={{ display:"flex", gap:24, padding:"12px 0 16px", borderTop:"1px solid rgba(255,255,255,.08)" }}>
+            {[["Total",total,null],["Received",received,"#4ADE80"],["Outstanding",total-received,"#FCA5A5"],["Progress",pct+"%",null]].map(([l,v,a])=>(
+              <div key={l}><div style={{ fontSize:20, fontWeight:800, color:a||"#fff" }}>{v}</div><div style={{ fontSize:11, color:"#94A3B8", textTransform:"uppercase", letterSpacing:".06em" }}>{l}</div></div>
+            ))}
+          </div>
+        </div>
+      </div>
+      <div style={{ maxWidth:900, margin:"0 auto", padding:24 }}>
+        {complete && <div style={{ background:"linear-gradient(135deg,#16A34A,#15803D)", color:"#fff", borderRadius:12, padding:"18px 24px", marginBottom:20, display:"flex", alignItems:"center", gap:12, boxShadow:"0 4px 20px rgba(22,163,74,.3)" }}>
+          <span style={{ fontSize:28 }}>🎉</span>
+          <div><div style={{ fontWeight:800, fontSize:18 }}>FILE COMPLETE</div><div style={{ fontSize:13, opacity:.85 }}>All conditions received. This file is clear to close.</div></div>
+        </div>}
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:20, alignItems:"center" }}>
+          <div style={{ display:"flex", background:"#fff", border:"1px solid #E5E7EB", borderRadius:8, overflow:"hidden" }}>
+            {FILTERS.map(f=><button key={f} onClick={()=>setStatusF(f)} style={{ padding:"7px 14px", border:"none", cursor:"pointer", fontSize:13, fontWeight:500, background:statusF===f?"#0F172A":"transparent", color:statusF===f?"#fff":"#6B7280" }}>{f}</button>)}
+          </div>
+          <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+            {["All",...PARTIES].map(p=>{ const sel=partyF===p; const m=PARTY_META[p]; return <button key={p} onClick={()=>setPartyF(p)} style={{ padding:"6px 12px", borderRadius:999, border:"1.5px solid "+(sel&&m?m.color:"#E5E7EB"), background:sel&&m?m.bg:"#fff", color:sel&&m?m.color:"#6B7280", fontWeight:sel?700:500, fontSize:12, cursor:"pointer" }}>{p}</button>; })}
+          </div>
+        </div>
+        {total>0 && <div style={{ marginBottom:20 }}><ProgressBar pct={pct} /><div style={{ fontSize:12, color:"#94A3B8", marginTop:6 }}>{received} of {total} conditions received</div></div>}
+        {visible.length===0
+          ? <div style={{ textAlign:"center", padding:"60px 0", color:"#94A3B8" }}><div style={{ fontSize:40, marginBottom:12 }}>📋</div><div style={{ fontWeight:600, fontSize:16, marginBottom:6, color:"#64748B" }}>No conditions here</div><div style={{ fontSize:14 }}>{conds.length===0?"Use Add Conditions to get started.":"Try adjusting the filters."}</div></div>
+          : <div style={{ display:"flex", flexDirection:"column", gap:6 }}>{visible.map(c=><ConditionRow key={c.id} c={c} onToggle={toggle} onDelete={delCond} />)}</div>
+        }
+      </div>
+      {showAdd && <AddConditionsModal onSave={addConds} onClose={()=>setShowAdd(false)} apiKey={apiKey} />}
+    </div>
+  );
+}
+
+// ── File Card ──────────────────────────────────────────────────────────
+function FileCard({ file, onOpen, onDelete, onReassign, loanOfficers }) {
+  const [hover, setHover] = useState(false);
+  const [showMove, setShowMove] = useState(false);
+  const conds = file.conditions||[];
+  const total = conds.length, received = conds.filter(c=>c.done).length;
+  const pct = total?Math.round(received/total*100):0, complete = total>0&&received===total;
+  return (
+    <div onMouseEnter={()=>setHover(true)} onMouseLeave={()=>{setHover(false);setShowMove(false);}} onClick={()=>onOpen(file.id)}
+      style={{ background:"#fff", borderRadius:12, padding:"16px 18px", border:"1.5px solid "+(hover?"#3B82F6":complete?"#BBF7D0":"#E5E7EB"), cursor:"pointer", transition:"all .18s", position:"relative", boxShadow:hover?"0 6px 20px rgba(59,130,246,.1)":"0 1px 3px rgba(0,0,0,.04)", transform:hover?"translateY(-1px)":"none" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:4 }}>
+        <div style={{ fontWeight:700, fontSize:15, color:"#0F172A", lineHeight:1.2, flex:1, marginRight:8 }}>{file.name}</div>
+        <div style={{ display:"flex", gap:4, alignItems:"center", flexShrink:0 }}>
+          {complete && <span style={{ background:"#DCFCE7", color:"#15803D", fontSize:10, fontWeight:700, padding:"2px 8px", borderRadius:999, border:"1px solid #86EFAC" }}>Complete</span>}
+          {hover && loanOfficers && loanOfficers.length>0 && (
+            <div style={{ position:"relative" }}>
+              <button onClick={e=>{e.stopPropagation();setShowMove(s=>!s);}} style={{ background:"#F1F5F9", border:"1px solid #E2E8F0", cursor:"pointer", color:"#64748B", fontSize:11, padding:"3px 8px", borderRadius:6, fontWeight:600 }}>Move</button>
+              {showMove && (
+                <div onClick={e=>e.stopPropagation()} style={{ position:"absolute", top:"calc(100% + 4px)", right:0, zIndex:50, background:"#fff", border:"1px solid #E5E7EB", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.12)", minWidth:180, overflow:"hidden" }}>
+                  <div style={{ padding:"8px 12px", fontSize:11, fontWeight:700, color:"#94A3B8", textTransform:"uppercase", letterSpacing:".06em", borderBottom:"1px solid #F1F5F9" }}>Assign to...</div>
+                  {loanOfficers.map(lo=>(
+                    <button key={lo.id} onClick={e=>{e.stopPropagation();onReassign(file.id,lo.id);setShowMove(false);}}
+                      style={{ display:"flex", alignItems:"center", gap:8, width:"100%", padding:"9px 12px", border:"none", background:file.loId===lo.id?"#F0F9FF":"#fff", cursor:"pointer", fontSize:13, fontWeight:file.loId===lo.id?700:500, color:file.loId===lo.id?"#3B82F6":"#1E293B", textAlign:"left" }}
+                      onMouseEnter={e=>{if(file.loId!==lo.id)e.currentTarget.style.background="#F8FAFC";}} onMouseLeave={e=>{if(file.loId!==lo.id)e.currentTarget.style.background="#fff";}}>
+                      <div style={{ width:22, height:22, borderRadius:"50%", background:lo.color, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontSize:9, fontWeight:800, flexShrink:0 }}>{initials(lo.name)}</div>
+                      {lo.name}{file.loId===lo.id&&<span style={{ marginLeft:"auto", color:"#3B82F6" }}>✓</span>}
+                    </button>
+                  ))}
+                  <button onClick={e=>{e.stopPropagation();onReassign(file.id,null);setShowMove(false);}} style={{ display:"block", width:"100%", padding:"9px 12px", border:"none", borderTop:"1px solid #F1F5F9", background:"#fff", cursor:"pointer", fontSize:13, color:"#94A3B8", textAlign:"left" }} onMouseEnter={e=>{e.currentTarget.style.background="#F8FAFC";}} onMouseLeave={e=>{e.currentTarget.style.background="#fff";}}>Unassign</button>
+                </div>
+              )}
+            </div>
+          )}
+          <button onClick={e=>{e.stopPropagation();onDelete(file.id);}} style={{ background:"none", border:"none", cursor:"pointer", color:hover?"#CBD5E1":"transparent", fontSize:14, padding:"1px 4px", borderRadius:4 }} onMouseEnter={e=>{e.currentTarget.style.color="#EF4444";}} onMouseLeave={e=>{e.currentTarget.style.color="#CBD5E1";}}>✕</button>
+        </div>
+      </div>
+      {file.loan && <div style={{ fontSize:11, color:"#94A3B8", marginBottom:10 }}>#{file.loan}</div>}
+      <ProgressBar pct={pct} />
+      <div style={{ display:"flex", justifyContent:"space-between", marginTop:8, fontSize:12 }}>
+        <span style={{ color:"#64748B" }}>{received}/{total} received</span>
+        <span style={{ color:(total-received)>0?"#DC2626":"#16A34A", fontWeight:600 }}>{(total-received)>0?((total-received)+" outstanding"):"All clear"}</span>
+      </div>
+      {total>0 && <div style={{ display:"flex", gap:4, marginTop:10, flexWrap:"wrap" }}>
+        {PARTIES.filter(p=>conds.some(c=>c.party===p)).map(p=>{ const m=PARTY_META[p]; return <span key={p} style={{ fontSize:10, padding:"2px 7px", borderRadius:999, color:m.color, background:m.bg, border:"1px solid "+m.color+"33" }}>{p} {conds.filter(c=>c.party===p).length}</span>; })}
+      </div>}
+    </div>
+  );
+}
+
+// ── LO Section ─────────────────────────────────────────────────────────
+function LOSection({ lo, files, onOpen, onDeleteFile, onAddFile, onReassign, loanOfficers }) {
+  const [open, setOpen] = useState(true);
+  const total = files.length;
+  const complete = files.filter(f=>{const c=f.conditions||[];return c.length>0&&c.every(x=>x.done);}).length;
+  return (
+    <div style={{ marginBottom:28 }}>
+      <div onClick={()=>setOpen(o=>!o)} style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14, cursor:"pointer", userSelect:"none" }}>
+        <div style={{ width:40, height:40, borderRadius:"50%", background:lo.color, color:"#fff", display:"flex", alignItems:"center", justifyContent:"center", fontWeight:800, fontSize:15, flexShrink:0, boxShadow:"0 2px 8px "+lo.color+"44" }}>{initials(lo.name)}</div>
+        <div style={{ flex:1 }}>
+          <div style={{ fontWeight:800, fontSize:17, color:"#0F172A", display:"flex", alignItems:"center", gap:8, flexWrap:"wrap" }}>
+            {lo.name}
+            <span style={{ fontSize:12, fontWeight:600, color:lo.color, background:lo.color+"18", padding:"2px 8px", borderRadius:999 }}>{total} file{total!==1?"s":""}</span>
+            {complete>0 && <span style={{ fontSize:12, fontWeight:600, color:"#16A34A", background:"#DCFCE7", padding:"2px 8px", borderRadius:999 }}>{complete} complete</span>}
+            {(total-complete)>0 && <span style={{ fontSize:12, fontWeight:600, color:"#D97706", background:"#FFFBEB", padding:"2px 8px", borderRadius:999 }}>{total-complete} pending</span>}
+          </div>
+        </div>
+        <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+          <button onClick={e=>{e.stopPropagation();onAddFile(lo.id);}} style={{ ...BP, fontSize:12, padding:"6px 12px" }}>+ New File</button>
+          <span style={{ color:"#94A3B8", fontSize:18 }}>{open?"▾":"▸"}</span>
+        </div>
+      </div>
+      {open && (files.length===0
+        ? <div style={{ border:"2px dashed #E5E7EB", borderRadius:12, padding:24, textAlign:"center", color:"#94A3B8", fontSize:13 }}>No files yet. Click + New File to add one.</div>
+        : <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))", gap:12 }}>
+            {files.map(f=><FileCard key={f.id} file={f} onOpen={onOpen} onDelete={onDeleteFile} onReassign={onReassign} loanOfficers={loanOfficers} />)}
+          </div>
+      )}
+      <div style={{ height:1, background:"#E5E7EB", marginTop:24 }} />
+    </div>
+  );
+}
+
+// ── Dashboard ──────────────────────────────────────────────────────────
+function Dashboard({ files, loanOfficers, onOpen, onAddFile, onDeleteFile, onReassign, onManageLOs, onChangeKey }) {
+  const [search, setSearch] = useState("");
+  const filtered = files.filter(f=>f.name.toLowerCase().includes(search.toLowerCase())||(f.loan||"").toLowerCase().includes(search.toLowerCase()));
+  const totalComplete = files.filter(f=>{const c=f.conditions||[];return c.length>0&&c.every(x=>x.done);}).length;
+  const unassigned = filtered.filter(f=>!f.loId||!loanOfficers.find(lo=>lo.id===f.loId));
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#F8FAFC" }}>
+      <div style={{ background:"#0F172A", color:"#fff", padding:"0 24px" }}>
+        <div style={{ maxWidth:1100, margin:"0 auto", padding:"24px 0 28px" }}>
+          <div style={{ display:"flex", alignItems:"center", gap:16, flexWrap:"wrap" }}>
+            <div style={{ flex:1 }}>
+              <div style={{ fontSize:26, fontWeight:900, letterSpacing:"-.02em" }}>🏠 Mortgage Condition Tracker</div>
+              <div style={{ fontSize:13, color:"#64748B", marginTop:4 }}>{files.length} file{files.length!==1?"s":""} &middot; {totalComplete} complete &middot; {loanOfficers.length} loan officer{loanOfficers.length!==1?"s":""}</div>
+            </div>
+            <input style={{ ...IS, width:200, background:"rgba(255,255,255,.07)", border:"1px solid rgba(255,255,255,.12)", color:"#fff" }} value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search files..." />
+            <button style={{ ...BG, fontSize:13 }} onClick={onManageLOs}>Manage Loan Officers</button>
+            <button style={{ ...BG, fontSize:12, padding:"7px 12px" }} onClick={onChangeKey} title="Change API key">⚙ API Key</button>
+          </div>
+        </div>
+      </div>
+      <div style={{ maxWidth:1100, margin:"0 auto", padding:"28px 24px" }}>
+        {loanOfficers.length===0&&files.length===0
+          ? <div style={{ textAlign:"center", padding:"80px 0" }}>
+              <div style={{ fontSize:52, marginBottom:16 }}>🏠</div>
+              <div style={{ fontSize:20, fontWeight:700, color:"#334155", marginBottom:8 }}>Get started</div>
+              <div style={{ fontSize:14, color:"#94A3B8", marginBottom:24 }}>Add your loan officers first, then create borrower files under each one.</div>
+              <button style={BP} onClick={onManageLOs}>+ Add Loan Officers</button>
+            </div>
+          : <div>
+              {loanOfficers.map(lo=>{
+                const loFiles=filtered.filter(f=>f.loId===lo.id);
+                return <LOSection key={lo.id} lo={lo} files={loFiles} onOpen={onOpen} onDeleteFile={onDeleteFile} onAddFile={onAddFile} onReassign={onReassign} loanOfficers={loanOfficers} />;
+              })}
+              {unassigned.length>0 && <LOSection lo={{id:null,name:"Unassigned",color:"#6B7280"}} files={unassigned} onOpen={onOpen} onDeleteFile={onDeleteFile} onAddFile={onAddFile} onReassign={onReassign} loanOfficers={loanOfficers} />}
+            </div>
+        }
+      </div>
+    </div>
+  );
+}
+
+// ── Root App ───────────────────────────────────────────────────────────
+function App() {
+  const [apiKey, setApiKey] = useState(()=>lsGet(STORAGE_KEY_APIKEY));
+  const [files, setFiles] = useState(()=>lsGet(STORAGE_KEY_FILES)||[]);
+  const [loanOfficers, setLOs] = useState(()=>lsGet(STORAGE_KEY_LOS)||[]);
+  const [activeFileId, setActiveFileId] = useState(null);
+  const [showAddFile, setShowAddFile] = useState(false);
+  const [addFileLoId, setAddFileLoId] = useState(null);
+  const [showManageLOs, setShowManageLOs] = useState(false);
+  const [changingKey, setChangingKey] = useState(false);
+
+  useEffect(()=>{ lsSet(STORAGE_KEY_FILES, files); }, [files]);
+  useEffect(()=>{ lsSet(STORAGE_KEY_LOS, loanOfficers); }, [loanOfficers]);
+
+  const saveKey = k => { lsSet(STORAGE_KEY_APIKEY,k); setApiKey(k); setChangingKey(false); };
+
+  if (!apiKey || changingKey) return <ApiKeyScreen onSave={saveKey} />;
+
+  const addFile = ({name,loan,loId})=>{ setFiles(p=>[...p,{id:uid(),name,loan,loId:loId||null,conditions:[],createdAt:getToday()}]); setShowAddFile(false); };
+  const updateFile = useCallback(u=>setFiles(p=>p.map(f=>f.id===u.id?u:f)),[]);
+  const deleteFile = id=>{ if(window.confirm("Delete this file and all its conditions?")) setFiles(p=>p.filter(f=>f.id!==id)); };
+  const reassignFile = useCallback((fid,lid)=>setFiles(p=>p.map(f=>f.id===fid?{...f,loId:lid||null}:f)),[]);
+  const handleAddFile = lid=>{ setAddFileLoId(lid); setShowAddFile(true); };
+
+  const activeFile = files.find(f=>f.id===activeFileId);
+  const activeLO = activeFile ? loanOfficers.find(lo=>lo.id===activeFile.loId) : null;
+
+  if (activeFile) return (
+    <DetailView file={activeFile} loName={activeLO?.name} loColor={activeLO?.color} onBack={()=>setActiveFileId(null)} onUpdate={updateFile} apiKey={apiKey} />
+  );
+
+  return (
+    <div>
+      <Dashboard files={files} loanOfficers={loanOfficers} onOpen={setActiveFileId} onAddFile={handleAddFile} onDeleteFile={deleteFile} onReassign={reassignFile} onManageLOs={()=>setShowManageLOs(true)} onChangeKey={()=>setChangingKey(true)} />
+      {showAddFile && <AddFileModal onSave={addFile} onClose={()=>setShowAddFile(false)} loanOfficers={loanOfficers} defaultLoId={addFileLoId} />}
+      {showManageLOs && <ManageLOsModal loanOfficers={loanOfficers} onSave={list=>{setLOs(list);setShowManageLOs(false);}} onClose={()=>setShowManageLOs(false)} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
